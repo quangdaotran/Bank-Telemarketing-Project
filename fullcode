@@ -1,0 +1,363 @@
+## import data:
+bank = read.csv("Bank Marketing.csv")
+
+bank = bank[,c("age","job","marital","education","default","housing","loan","contact","month",
+               "day_of_week","duration","campaign","pdays","previous","poutcome","y")]
+
+summary(bank)
+str(bank)
+colnames(bank)
+bank = bank[,-11]
+bank$y = factor(bank$y, levels = c("no","yes"), labels = c("no","yes"))
+
+bank_number = bank[,c("age","campaign","pdays","previous")]
+bank_category = bank[,-c(1,11,12,13,15)]
+
+## find null values:
+table(is.na(bank))
+# no null values found
+
+## Zero and Near Zero Variance predictors
+library(caret)
+nzv <- nearZeroVar(bank_category, saveMetrics= TRUE)
+nzv[nzv$nzv,]
+# no categorical variable regarded as near zero variance predictor
+
+## outliers check - boxplot
+boxplot(bank_number)
+
+#age
+boxplot(bank_number$age,ann = FALSE,range = 1.5,horizontal = TRUE)
+IQR = as.numeric(quantile(bank_number$age, probs = 0.75) - quantile(bank_number$age, probs = 0.25))
+inliers = c(as.numeric(quantile(bank_number$age, probs = 0.25)-1.5*IQR),as.numeric(quantile(bank_number$age, probs = 0.75)+1.5*IQR))
+range(bank_number$age)
+# 69.5 < outliers <= 98
+bin = c(min(bank_number$age),as.numeric(quantile(bank_number$age, probs = 0.25)),median(bank_number$age),
+        as.numeric(quantile(bank_number$age, probs = 0.75)),max(bank_number$age)+1)
+bank$age = .bincode(bank$age,bin,FALSE,include.lowest = TRUE)
+bank$age = factor(bank$age, levels = c("1","2","3","4"),labels = c("0to31","32to37","38to46","47to98"))
+
+#campaign
+boxplot(bank_number$campaign,ann = FALSE,range = 1.5,horizontal = TRUE)
+IQR = as.numeric(quantile(bank_number$campaign, probs = 0.75) - quantile(bank_number$campaign, probs = 0.25))
+inliers = c(as.numeric(quantile(bank_number$campaign, probs = 0.25)-1.5*IQR),as.numeric(quantile(bank_number$campaign, probs = 0.75)+1.5*IQR))
+range(bank_number$campaign)
+# 6 < outliers <= 56
+bin = c(min(bank_number$campaign),as.numeric(quantile(bank_number$campaign, probs = 0.25)),median(bank_number$campaign),
+        as.numeric(quantile(bank_number$campaign, probs = 0.75)),max(bank_number$campaign)+1)
+bank$campaign = .bincode(bank$campaign,c(1,2,58),FALSE,include.lowest = TRUE)
+bank$campaign = factor(bank$campaign, levels = c("1","2"), labels = c("0to1","2to56"))
+
+#pdays
+boxplot(bank_number$pdays,ann = FALSE,range = 1.5,horizontal = TRUE)
+IQR = as.numeric(quantile(bank_number$pdays, probs = 0.75) - quantile(bank_number$pdays, probs = 0.25))
+inliers = c(as.numeric(quantile(bank_number$pdays, probs = 0.25)-1.5*IQR),as.numeric(quantile(bank_number$pdays, probs = 0.75)+1.5*IQR))
+range(bank_number$pdays)
+# outliers < 999
+library(dplyr) #import filter
+pdaystest = data.frame(filter(bank,bank$pdays == 0))
+# pdays  = 0 does not mean the client did not answer to every contact in the last campaign,
+# for pdays = 0, previous ranges from 1 to 5, poutcome is all success.
+table(bank$pdays)
+pdaystest = data.frame(filter(bank_number,bank_number$pdays == 999))
+table(pdaystest$previous)
+
+bank$pdays = ifelse(bank_number$pdays == 999,0,1)
+bank$pdays = factor(bank$pdays,levels = c(0,1), labels = c("notcontacted","contacted"))
+
+#previous
+boxplot(bank_number$previous,ann = FALSE,range = 1.5,horizontal = TRUE)
+IQR = as.numeric(quantile(bank_number$previous, probs = 0.75) - quantile(bank_number$previous, probs = 0.25))
+inliers = c(as.numeric(quantile(bank_number$previous, probs = 0.25)-1.5*IQR),as.numeric(quantile(bank_number$previous, probs = 0.75)+1.5*IQR))
+range(bank_number$previous)
+# outliers > 0
+previoustest = data.frame(filter(bank,bank$previous == 0))
+table(previoustest$pdays)
+
+pdaystest = data.frame(filter(bank,bank$pdays == "notcontacted"))
+table(pdaystest$previous)
+
+bank$previous = ifelse(bank_number$previous == 0,"notcontacted",
+                       ifelse(bank_number$pdays == 999,"notanswer","contacted"))
+bank$previous = factor(bank$previous,levels= c("notcontacted","notanswer","contacted"), labels = c("notcontacted","notanswer","contacted"))
+
+## near zero variance check again
+nzv <- nearZeroVar(bank[,-15], saveMetrics= TRUE)
+nzv[nzv$nzv,]
+# => drop pdays
+bank = bank[,-12]
+
+## integer coding
+encode_noorder <- function(x) {
+  x <- as.numeric(factor(x, levels = unique(x), exclude = NULL))
+  x
+}
+bank_intcoding = bank
+bank_intcoding$age = as.numeric(factor(bank_intcoding$age, levels = c("0to31","32to37","38to46","47to98")))
+bank_intcoding$campaign = as.numeric(factor(bank_intcoding$campaign, levels = c("0to1","2to56")))
+bank_intcoding[,c(2:10,12,13)] = lapply(bank_intcoding[,c(2:10,12,13)],
+                                        encode_noorder)
+
+## training and testing split
+set.seed(1)
+trainIndex = createDataPartition(bank_intcoding$y, times =1 ,p = 0.7, list = FALSE)
+
+Train = bank_intcoding[trainIndex, ]
+Test = bank_intcoding[-trainIndex, ]
+
+## create balanced training data
+table(bank_intcoding$y)
+table(Train$y)
+#Train$y = as.numeric(Train$y)
+
+#install.packages("imbalance")
+library(imbalance)
+newData<- imbalance::oversample(
+  Train,
+  ratio =0.7,              # ratio of the minority/majority class
+  method = "SMOTE", #insert resampling method
+  classAttr = "y")
+
+## features selection (only run either random forest or rfe)
+# Random Forest
+str(newData$y)
+library(randomForest)
+rf <- randomForest(y ~ .,data=newData,ntree = 50)
+importance(rf)
+new = colnames(newData[,-14])
+new2 = as.numeric(importance(rf))
+choose = data.frame(new,new2)
+choose = choose[order(-choose$new2),]
+0.8*nrow(choose)
+remove = which(names(newData)%in%choose$new[11:13])
+newData2 = newData[,-remove]
+Test2 = Test[,-remove]
+
+# Recursive Feature Elimination 
+control <- rfeControl(functions=treebagFuncs, method="cv", number=3)
+results <- rfe(newData[,c(1:13)], newData[,14], sizes=c(1:13), rfeControl=control)
+keep = c(predictors(results)[1:10],"y")
+newData2 = newData[,keep]
+Test2 = Test[,keep]
+
+library(pROC)
+## Logistic Regression:
+logit = glm(y~ ., family = binomial, data = newData2)
+summary(logit)
+y.probs = predict(logit, Test2, type = "response")
+y.pred = ifelse (y.probs >= 0.5,"yes","no")
+cmatrix = table(y.pred, Test2$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix[1,1]/(cmatrix[1,1]+cmatrix[2,1])
+specificity = cmatrix[2,2]/(cmatrix[2,2]+cmatrix[1,2])
+precision = cmatrix[1,1]/(cmatrix[1,1]+cmatrix[1,2])
+G_mean1 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix[1,1]+cmatrix[2,2])/(cmatrix[1,1]+cmatrix[2,2]+cmatrix[1,2]+cmatrix[2,1])
+roc_obj = roc(as.numeric(factor(Test2$y,levels = c("no","yes"))),as.numeric(factor(y.pred,levels = c("no","yes"))))
+auc(roc_obj)
+
+## Decision Tree:
+library(rpart)
+tree <- rpart(y~., data = newData2, method = "class")
+y.predict <-predict(tree, Test2, type = "class")
+table(y.predict)
+cmatrix2 = table(y.predict, Test2$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix2[1,1]/(cmatrix2[1,1]+cmatrix2[2,1])
+specificity = cmatrix2[2,2]/(cmatrix2[2,2]+cmatrix2[1,2])
+precision = cmatrix2[1,1]/(cmatrix2[1,1]+cmatrix2[1,2])
+G_mean2 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix2[1,1]+cmatrix2[2,2])/(cmatrix2[1,1]+cmatrix2[2,2]+cmatrix2[1,2]+cmatrix2[2,1])
+roc_obj = roc(as.numeric(factor(Test2$y,levels = c("no","yes"))),as.numeric(factor(y.predict, levels = c("no","yes"))))
+auc(roc_obj)
+
+## Random Forest:
+library(randomForest)
+rf <- randomForest(y ~ .,data=newData2,ntree = 50)
+rf.predict <-predict(rf, Test2, type = "class")
+table(rf.predict)
+cmatrix3 = table(rf.predict, Test2$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix3[1,1]/(cmatrix3[1,1]+cmatrix3[2,1])
+specificity = cmatrix3[2,2]/(cmatrix3[2,2]+cmatrix3[1,2])
+precision = cmatrix3[1,1]/(cmatrix3[1,1]+cmatrix3[1,2])
+G_mean3 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix3[1,1]+cmatrix3[2,2])/(cmatrix3[1,1]+cmatrix3[2,2]+cmatrix3[1,2]+cmatrix3[2,1])
+roc_obj = roc(as.numeric(factor(Test2$y,levels = c("no","yes"))),as.numeric(factor(rf.predict, levels = c("no","yes"))))
+auc(roc_obj)
+
+## Naive Bayes:
+library(e1071)
+bayes = naiveBayes(newData2[,-11],newData2[,11])
+bayes_pred = predict(bayes, Test2[,-11], type = "class")
+cmatrix4 = table(bayes_pred, Test2$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix4[1,1]/(cmatrix4[1,1]+cmatrix4[2,1])
+specificity = cmatrix4[2,2]/(cmatrix4[2,2]+cmatrix4[1,2])
+precision = cmatrix4[1,1]/(cmatrix4[1,1]+cmatrix4[1,2])
+G_mean4 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix4[1,1]+cmatrix4[2,2])/(cmatrix4[1,1]+cmatrix4[2,2]+cmatrix4[1,2]+cmatrix4[2,1])
+roc_obj = roc(as.numeric(factor(Test2$y,levels = c("no","yes"))),as.numeric(factor(bayes_pred, levels = c("no","yes"))))
+auc(roc_obj)
+
+## Neural Networks:
+library(neuralnet)
+neural = neuralnet(y~.,data=newData2, hidden = 1, rep = 1,algorithm = "rprop-")
+neural_prob = predict(neural, Test2[,-11])
+neural_pred = ifelse(neural_prob[,1] >= neural_prob[,2],"no","yes")
+cmatrix5 = table(neural_pred, Test2$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix5[1,1]/(cmatrix5[1,1]+cmatrix5[2,1])
+specificity = cmatrix5[2,2]/(cmatrix5[2,2]+cmatrix5[1,2])
+precision = cmatrix5[1,1]/(cmatrix5[1,1]+cmatrix5[1,2])
+G_mean5 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix5[1,1]+cmatrix5[2,2])/(cmatrix5[1,1]+cmatrix5[2,2]+cmatrix5[1,2]+cmatrix5[2,1])
+roc_obj = roc(as.numeric(factor(Test2$y,levels = c("no","yes"))),as.numeric(factor(neural_pred, levels = c("no","yes"))))
+auc(roc_obj)
+
+## one-hot encoding
+bank_hotencode = bank
+bank_hotencode$numb = row.names(bank_hotencode)
+bank_hotencode = bank_hotencode[,c(15,1:14)]
+dummies <- dummyVars(numb~ ., data = bank_hotencode[,-15],fullRank=T)
+newbank<- data.frame(predict(dummies, newdata = bank_hotencode[,-15]))
+newbank$y = bank$y
+str(newbank)
+
+## training and testing split
+set.seed(1)
+trainIndex = createDataPartition(newbank$y, times =1 ,p = 0.7, list = FALSE)
+
+Train2 = newbank[trainIndex, ]
+Test2 = newbank[-trainIndex, ]
+
+## create balanced training data (use either resampling or cost-sensitive method)
+table(newbank$y)
+table(Train2$y)
+
+#install.packages("imbalance")
+library(imbalance)
+newData<- imbalance::oversample(
+  Train2,
+  ratio = 0.98,              # ratio of the minority/majority class
+  method = "ADASYN", #insert resampling method (SMOTE/ADASYN)
+  classAttr = "y")
+
+# use cost-sensitive methods:
+cost = matrix(c(0,10,1,0),byrow = FALSE, ncol = 2)
+colnames(cost) = c("pred0","pred1")
+rownames(cost) = c("act0","act1")
+threshold_yes = cost[1,2]/(cost[1,2]+cost[2,1])
+newData = Train2
+
+## features selection (only run either random forest or rfe)
+# Random Forest
+library(randomForest)
+rf <- randomForest(y ~ .,data=newData,ntree = 50)
+importance(rf)
+new = colnames(newData[,-50])
+new2 = as.numeric(importance(rf))
+choose = data.frame(new,new2)
+choose = choose[order(-choose$new2),]
+0.8*nrow(choose)
+remove = which(names(newData)%in%choose$new[40:49])
+newData2 = newData[,-remove]
+Test3 = Test2[,-remove]
+
+# Recursive Feature Elimination (takes a lot of time)
+control <- rfeControl(functions=treebagFuncs, method="cv", number=3)
+results <- rfe(newData[,c(1:49)], newData[,50], sizes=c(1:49), rfeControl=control)
+keep = c(predictors(results)[1:39],"y")
+newData2 = newData[,keep]
+table(newData2$y)
+Test3 = Test2[,keep]
+table(newData2$poutcomenonexistent)
+
+library(pROC)
+## Logistic Regression:
+logit = glm(y~ ., family = binomial, data = newData2)
+summary(logit)
+y.probs = predict(logit, Test3, type = "response")
+
+y.pred = ifelse (y.probs >= 0.5,"yes","no") #resampling
+y.pred = ifelse (y.probs >= threshold_yes,"yes","no") #cost-matrix
+
+cmatrix = table(y.pred, Test3$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix[1,1]/(cmatrix[1,1]+cmatrix[2,1])
+specificity = cmatrix[2,2]/(cmatrix[2,2]+cmatrix[1,2])
+precision = cmatrix[1,1]/(cmatrix[1,1]+cmatrix[1,2])
+G_mean1 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix[1,1]+cmatrix[2,2])/(cmatrix[1,1]+cmatrix[2,2]+cmatrix[1,2]+cmatrix[2,1])
+roc_obj = roc(as.numeric(factor(Test3$y,levels = c("no","yes"))),as.numeric(factor(y.pred,levels = c("no","yes"))))
+auc(roc_obj)
+
+## Decision Tree:
+library(rpart)
+tree <- rpart(y~., data = newData2, method = "class") #resampling
+y.predict <-predict(tree, Test3, type = "class")
+table(y.predict)
+cmatrix2 = table(y.predict, Test3$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix2[1,1]/(cmatrix2[1,1]+cmatrix2[2,1])
+specificity = cmatrix2[2,2]/(cmatrix2[2,2]+cmatrix2[1,2])
+precision = cmatrix2[1,1]/(cmatrix2[1,1]+cmatrix2[1,2])
+G_mean2 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix2[1,1]+cmatrix2[2,2])/(cmatrix2[1,1]+cmatrix2[2,2]+cmatrix2[1,2]+cmatrix2[2,1])
+roc_obj = roc(as.numeric(factor(Test3$y,levels = c("no","yes"))),as.numeric(factor(y.predict, levels = c("no","yes"))))
+auc(roc_obj)
+
+## Random Forest:
+library(randomForest)
+
+rf <- randomForest(y ~ .,data=newData2,ntree = 50) #resampling
+rf <- randomForest(y ~ .,data=newData2,ntree = 50, cost = cost) #cost-matrix
+
+rf.predict <-predict(rf, Test3, type = "class")
+table(rf.predict)
+cmatrix3 = table(rf.predict, Test3$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix3[1,1]/(cmatrix3[1,1]+cmatrix3[2,1])
+specificity = cmatrix3[2,2]/(cmatrix3[2,2]+cmatrix3[1,2])
+precision = cmatrix3[1,1]/(cmatrix3[1,1]+cmatrix3[1,2])
+G_mean3 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix3[1,1]+cmatrix3[2,2])/(cmatrix3[1,1]+cmatrix3[2,2]+cmatrix3[1,2]+cmatrix3[2,1])
+roc_obj = roc(as.numeric(factor(Test3$y,levels = c("no","yes"))),as.numeric(factor(rf.predict, levels = c("no","yes"))))
+auc(roc_obj)
+
+## Naive Bayes:
+library(e1071)
+
+bayes = naiveBayes(newData2[,-40],newData2[,40]) #resampling
+bayes = naiveBayes(newData2[,-40],newData2[,40],cost = cost) #cost-matrix
+
+bayes_pred = predict(bayes, Test3[,-40], type = "class")
+cmatrix4 = table(bayes_pred, Test3$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix4[1,1]/(cmatrix4[1,1]+cmatrix4[2,1])
+specificity = cmatrix4[2,2]/(cmatrix4[2,2]+cmatrix4[1,2])
+precision = cmatrix4[1,1]/(cmatrix4[1,1]+cmatrix4[1,2])
+G_mean4 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix4[1,1]+cmatrix4[2,2])/(cmatrix4[1,1]+cmatrix4[2,2]+cmatrix4[1,2]+cmatrix4[2,1])
+roc_obj = roc(as.numeric(factor(Test3$y,levels = c("no","yes"))),as.numeric(factor(bayes_pred, levels = c("no","yes"))))
+auc(roc_obj)
+
+table(Test3$y)
+
+## Neural Networks:
+library(neuralnet)
+neural = neuralnet(y~.,data=newData2, hidden = 1, rep = 1,algorithm = "rprop-")
+neural_prob = predict(neural, Test3[,-40])
+
+neural_pred = ifelse(neural_prob[,2] >= neural_prob[,1],"yes","no") #resampling
+neural_pred = ifelse(neural_prob[,2] >= threshold_yes,"yes","no") #cost-matrix
+
+cmatrix5 = table(neural_pred, Test3$y)[c(2,1),c(2,1)]
+#metrics:
+sensitivity = cmatrix5[1,1]/(cmatrix5[1,1]+cmatrix5[2,1])
+specificity = cmatrix5[2,2]/(cmatrix5[2,2]+cmatrix5[1,2])
+precision = cmatrix5[1,1]/(cmatrix5[1,1]+cmatrix5[1,2])
+G_mean5 = sqrt(sensitivity*specificity)
+Accuracy = (cmatrix5[1,1]+cmatrix5[2,2])/(cmatrix5[1,1]+cmatrix5[2,2]+cmatrix5[1,2]+cmatrix5[2,1])
+roc_obj = roc(as.numeric(factor(Test3$y,levels = c("no","yes"))),as.numeric(factor(neural_pred, levels = c("no","yes"))))
+auc(roc_obj)
